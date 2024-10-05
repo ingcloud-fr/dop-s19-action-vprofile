@@ -60,10 +60,10 @@ jobs:
       - name: Code checkout
         uses: actions/checkout@v4
 
-      - name: upload image to ECR
+      - name: Build and upload image to ECR
         uses: appleboy/docker-ecr-action@master
         with:
-          access_key: ${{ secrets.AW_ACCESS_KEY_ID }}
+          access_key: ${{ secrets.AWS_ACCESS_KEY_ID }}
           secret_key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           registry: ${{ secrets.REGISTRY }}
           #cache_from: ${{ secrets.cache }}
@@ -74,3 +74,44 @@ jobs:
           daemon_off: false
           dockerfile: ./Dockerfile
           context: .
+  DEPLOY_ON_EKS:
+    needs: BUILD_AND_PUBLISH
+    runs-on: ubuntu-latest
+    steps:
+      - name: Code checkout
+        uses: actions/checkout@v4
+
+      # On configure les credentials AWS
+      - name: Configure AWS credentials
+        id: awscreds
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+      
+      # Pour avoir la commande kubectl pour installer via Helm
+      - name: Get Kube config file
+        id: getconfig
+        run: aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ${{ env.EKS_CLUSTER }}      
+      
+      - name: Print config file
+        run: car ~/.kube/config
+
+      # On crée un secret kubernetes nommé regcred pour se connecter à l'ECR et récupérer l'image
+      - name: Login to ECR
+        run: kubectl create secret docker-registry regcred --docker-server=${{ secrets.REGISTRY }} --docker-username=AWS --docker-password=$(aws ecr get-login-password)
+      
+      - name: Deploy Helm
+        uses: bitovi/github-actions-deploy-eks-helm@v1.2.8
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}   
+          cluster-name: ${{ env.EKS_CLUSTER }} 
+          # config-files: .github/values/dev/yaml
+          chart-path: helm/vprofilecharts
+          namespace: default
+          values: appimage=${{ secrets.REGISTRY }}/${{ env.ECR_REPOSITORY }},apptag=${{ github.run_number }}
+          name: vprofile-stack
+                
